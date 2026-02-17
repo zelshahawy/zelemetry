@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS slack_config (
 		return fmt.Errorf("create slack_config table: %w", err)
 	}
 
+	_, err = db.Exec(`
+CREATE TABLE IF NOT EXISTS app_users (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+`)
+	if err != nil {
+		return fmt.Errorf("create app_users table: %w", err)
+	}
+
+	_, err = db.Exec(`
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+`)
+	if err != nil {
+		return fmt.Errorf("create auth_sessions table: %w", err)
+	}
+
 	if err := addColumnIfMissing(db, `ALTER TABLE websites ADD COLUMN slack_alert_enabled INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return fmt.Errorf("alter websites table: %w", err)
 	}

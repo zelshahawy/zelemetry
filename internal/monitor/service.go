@@ -3,15 +3,21 @@ package monitor
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -19,6 +25,7 @@ const (
 	defaultIntervalS  = 200
 	schedulerTickRate = 5 * time.Second
 	slackAlertDelay   = 5 * time.Minute
+	sessionTTL        = 24 * time.Hour
 )
 
 type Website struct {
@@ -61,16 +68,15 @@ type UpdateWebsiteSettingsInput struct {
 
 type SlackConfig struct {
 	Enabled    bool   `json:"enabled"`
-	WebhookURL string `json:"webhook_url"`
 	Channel    string `json:"channel"`
 	Username   string `json:"username"`
+	HasWebhook bool   `json:"has_webhook"`
 }
 
 type SaveSlackConfigInput struct {
-	Enabled    bool
-	WebhookURL string
-	Channel    string
-	Username   string
+	Enabled  bool
+	Channel  string
+	Username string
 }
 
 type Service struct {
@@ -287,38 +293,38 @@ func (s *Service) CheckWebsite(id int64) (Website, error) {
 }
 
 func (s *Service) GetSlackConfig() (SlackConfig, error) {
-	row := s.db.QueryRow(`SELECT enabled, webhook_url, channel, username FROM slack_config WHERE id = 1`)
+	row := s.db.QueryRow(`SELECT enabled, channel, username FROM slack_config WHERE id = 1`)
 
 	var (
 		cfg        SlackConfig
 		enabledInt int
 	)
 
-	err := row.Scan(&enabledInt, &cfg.WebhookURL, &cfg.Channel, &cfg.Username)
+	err := row.Scan(&enabledInt, &cfg.Channel, &cfg.Username)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return SlackConfig{}, nil
+			return SlackConfig{HasWebhook: slackWebhookURL() != ""}, nil
 		}
 		return SlackConfig{}, fmt.Errorf("get slack config: %w", err)
 	}
 
 	cfg.Enabled = intToBool(enabledInt)
+	cfg.HasWebhook = slackWebhookURL() != ""
 	return cfg, nil
 }
 
 func (s *Service) SaveSlackConfig(input SaveSlackConfigInput) (SlackConfig, error) {
 	cfg := SlackConfig{
 		Enabled:    input.Enabled,
-		WebhookURL: strings.TrimSpace(input.WebhookURL),
 		Channel:    strings.TrimSpace(input.Channel),
 		Username:   strings.TrimSpace(input.Username),
+		HasWebhook: slackWebhookURL() != "",
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO slack_config (id, enabled, webhook_url, channel, username) VALUES (1, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, webhook_url = excluded.webhook_url, channel = excluded.channel, username = excluded.username`,
+		`INSERT INTO slack_config (id, enabled, channel, username) VALUES (1, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, channel = excluded.channel, username = excluded.username`,
 		boolToInt(cfg.Enabled),
-		cfg.WebhookURL,
 		cfg.Channel,
 		cfg.Username,
 	)
@@ -327,6 +333,124 @@ func (s *Service) SaveSlackConfig(input SaveSlackConfigInput) (SlackConfig, erro
 	}
 
 	return cfg, nil
+}
+
+func (s *Service) HasUser() (bool, error) {
+	row := s.db.QueryRow(`SELECT COUNT(1) FROM app_users`)
+	var count int
+	if err := row.Scan(&count); err != nil {
+		return false, fmt.Errorf("count users: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (s *Service) CreateInitialUser(username, password string) error {
+	name := strings.TrimSpace(username)
+	if name == "" {
+		return errors.New("username is required")
+	}
+	if len(password) < 8 {
+		return errors.New("password must be at least 8 characters")
+	}
+
+	hasUser, err := s.HasUser()
+	if err != nil {
+		return err
+	}
+	if hasUser {
+		return errors.New("user already exists")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO app_users (id, username, password_hash, created_at) VALUES (1, ?, ?, ?)`,
+		name,
+		string(hash),
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("create user: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) Login(username, password string) (string, error) {
+	name := strings.TrimSpace(username)
+	row := s.db.QueryRow(`SELECT id, password_hash FROM app_users WHERE username = ?`, name)
+
+	var (
+		userID int64
+		hash   string
+	)
+	if err := row.Scan(&userID, &hash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errors.New("invalid credentials")
+		}
+		return "", fmt.Errorf("get user: %w", err)
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		return "", errors.New("invalid credentials")
+	}
+
+	rawToken, tokenHash, err := newSessionToken()
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now().UTC()
+	_, err = s.db.Exec(
+		`INSERT INTO auth_sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+		tokenHash,
+		userID,
+		now.Format(time.RFC3339Nano),
+		now.Add(sessionTTL).Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create session: %w", err)
+	}
+
+	return rawToken, nil
+}
+
+func (s *Service) IsSessionValid(rawToken string) bool {
+	token := strings.TrimSpace(rawToken)
+	if token == "" {
+		return false
+	}
+
+	tokenHash := hashToken(token)
+	row := s.db.QueryRow(`SELECT expires_at FROM auth_sessions WHERE token_hash = ?`, tokenHash)
+
+	var expiresAtStr string
+	if err := row.Scan(&expiresAtStr); err != nil {
+		return false
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiresAtStr)
+	if err != nil {
+		return false
+	}
+
+	if time.Now().UTC().After(expiresAt) {
+		_, _ = s.db.Exec(`DELETE FROM auth_sessions WHERE token_hash = ?`, tokenHash)
+		return false
+	}
+
+	return true
+}
+
+func (s *Service) Logout(rawToken string) {
+	token := strings.TrimSpace(rawToken)
+	if token == "" {
+		return
+	}
+	_, _ = s.db.Exec(`DELETE FROM auth_sessions WHERE token_hash = ?`, hashToken(token))
 }
 
 func (s *Service) CheckAll() []Website {
@@ -520,12 +644,13 @@ func (s *Service) notifySlackDown(site Website) error {
 	if err != nil {
 		return err
 	}
-	if !cfg.Enabled || cfg.WebhookURL == "" {
+	webhookURL := slackWebhookURL()
+	if !cfg.Enabled || webhookURL == "" {
 		return ErrSlackNotConfigured
 	}
 
 	text := fmt.Sprintf(":rotating_light: %s is DOWN (%s) status=%d error=%s", site.Name, site.TargetURL, site.LastHTTPStatus, site.LastError)
-	return s.sendSlackMessage(cfg, text)
+	return s.sendSlackMessage(cfg, webhookURL, text)
 }
 
 // SendSlackTestMessage sends a test slack alert using the configured webhook.
@@ -534,13 +659,14 @@ func (s *Service) SendSlackTestMessage() error {
 	if err != nil {
 		return err
 	}
-	if !cfg.Enabled || cfg.WebhookURL == "" {
+	webhookURL := slackWebhookURL()
+	if !cfg.Enabled || webhookURL == "" {
 		return ErrSlackNotConfigured
 	}
-	return s.sendSlackMessage(cfg, ":warning: Zelemetry test alert")
+	return s.sendSlackMessage(cfg, webhookURL, ":warning: Zelemetry test alert")
 }
 
-func (s *Service) sendSlackMessage(cfg SlackConfig, text string) error {
+func (s *Service) sendSlackMessage(cfg SlackConfig, webhookURL string, text string) error {
 	payload := map[string]string{"text": text}
 	if cfg.Channel != "" {
 		payload["channel"] = cfg.Channel
@@ -554,7 +680,7 @@ func (s *Service) sendSlackMessage(cfg SlackConfig, text string) error {
 		return fmt.Errorf("marshal slack payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, cfg.WebhookURL, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create slack request: %w", err)
 	}
@@ -571,4 +697,22 @@ func (s *Service) sendSlackMessage(cfg SlackConfig, text string) error {
 	}
 
 	return nil
+}
+
+func slackWebhookURL() string {
+	return strings.TrimSpace(os.Getenv("ZELEMETRY_SLACK_WEBHOOK_URL"))
+}
+
+func newSessionToken() (string, string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", fmt.Errorf("generate session token: %w", err)
+	}
+	raw := base64.RawURLEncoding.EncodeToString(buf)
+	return raw, hashToken(raw), nil
+}
+
+func hashToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

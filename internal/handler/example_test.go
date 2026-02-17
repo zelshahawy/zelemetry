@@ -15,6 +15,26 @@ import (
 	"go.uber.org/fx"
 )
 
+func setupAndGetSessionCookie(t *testing.T, httpServer *echo.Echo) *http.Cookie {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set("username", "admin")
+	form.Set("password", "password123")
+
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rec := httptest.NewRecorder()
+	httpServer.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
+
+	cookies := rec.Result().Cookies()
+	if assert.NotEmpty(t, cookies) {
+		return cookies[0]
+	}
+	return nil
+}
+
 type monitoredWebsite struct {
 	ID                   int64      `json:"id"`
 	Name                 string     `json:"name"`
@@ -44,6 +64,7 @@ func TestDashboardFlow_AddSettingsAndCheckWebsite(t *testing.T) {
 
 	var httpServer *echo.Echo
 	internal.RunTest(t, fx.Populate(&httpServer))
+	sessionCookie := setupAndGetSessionCookie(t, httpServer)
 
 	addForm := url.Values{}
 	addForm.Set("name", "Core")
@@ -55,6 +76,7 @@ func TestDashboardFlow_AddSettingsAndCheckWebsite(t *testing.T) {
 
 	postReq := httptest.NewRequest(http.MethodPost, "/websites", strings.NewReader(addForm.Encode()))
 	postReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	postReq.AddCookie(sessionCookie)
 	postRec := httptest.NewRecorder()
 	httpServer.ServeHTTP(postRec, postReq)
 	assert.Equalf(t, http.StatusSeeOther, postRec.Code, "add response: %s", postRec.Body.String())
@@ -68,16 +90,19 @@ func TestDashboardFlow_AddSettingsAndCheckWebsite(t *testing.T) {
 
 	setReq := httptest.NewRequest(http.MethodPost, "/websites/1/settings", strings.NewReader(settingsForm.Encode()))
 	setReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	setReq.AddCookie(sessionCookie)
 	setRec := httptest.NewRecorder()
 	httpServer.ServeHTTP(setRec, setReq)
 	assert.Equalf(t, http.StatusSeeOther, setRec.Code, "settings response: %s", setRec.Body.String())
 
 	runReq := httptest.NewRequest(http.MethodPost, "/checks/run", nil)
+	runReq.AddCookie(sessionCookie)
 	runRec := httptest.NewRecorder()
 	httpServer.ServeHTTP(runRec, runReq)
 	assert.Equal(t, http.StatusSeeOther, runRec.Code)
 
 	apiReq := httptest.NewRequest(http.MethodGet, "/api/websites", nil)
+	apiReq.AddCookie(sessionCookie)
 	apiRec := httptest.NewRecorder()
 	httpServer.ServeHTTP(apiRec, apiReq)
 	assert.Equal(t, http.StatusOK, apiRec.Code)
@@ -101,6 +126,7 @@ func TestAddWebsiteValidation(t *testing.T) {
 
 	var httpServer *echo.Echo
 	internal.RunTest(t, fx.Populate(&httpServer))
+	sessionCookie := setupAndGetSessionCookie(t, httpServer)
 
 	form := url.Values{}
 	form.Set("name", "Broken")
@@ -111,6 +137,7 @@ func TestAddWebsiteValidation(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/websites", strings.NewReader(form.Encode()))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	req.AddCookie(sessionCookie)
 	rec := httptest.NewRecorder()
 	httpServer.ServeHTTP(rec, req)
 

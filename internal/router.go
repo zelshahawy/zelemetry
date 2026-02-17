@@ -9,6 +9,11 @@ import (
 // Router is used to register the application HTTP middlewares and handlers.
 func Router() fx.Option {
 	return fx.Options(
+		fxhttpserver.AsHandler("GET", "/setup", handler.NewSetupGetHandler),
+		fxhttpserver.AsHandler("POST", "/setup", handler.NewSetupPostHandler),
+		fxhttpserver.AsHandler("GET", "/login", handler.NewLoginGetHandler),
+		fxhttpserver.AsHandler("POST", "/login", handler.NewLoginPostHandler),
+		fxhttpserver.AsHandler("POST", "/logout", handler.NewLogoutHandler),
 		fxhttpserver.AsHandler("GET", "/", handler.NewDashboardHandler),
 		fxhttpserver.AsHandler("POST", "/websites", handler.NewAddWebsiteHandler),
 		fxhttpserver.AsHandler("POST", "/websites/:id/check", handler.NewCheckWebsiteHandler),

@@ -21,7 +21,9 @@ func NewDashboardHandler(service *monitor.Service) *DashboardHandler {
 
 func (h *DashboardHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
-		_ = h.service
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 		c.Response().WriteHeader(http.StatusOK)
 		return view.Dashboard().Render(c.Request().Context(), c.Response().Writer)
@@ -38,6 +40,9 @@ func NewAddWebsiteHandler(service *monitor.Service) *AddWebsiteHandler {
 
 func (h *AddWebsiteHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		timeoutMS, _ := strconv.Atoi(c.FormValue("timeout_ms"))
 		interval, _ := strconv.Atoi(c.FormValue("check_interval_seconds"))
 		enabled := c.FormValue("enabled") == "on"
@@ -70,6 +75,9 @@ func NewCheckWebsiteHandler(service *monitor.Service) *CheckWebsiteHandler {
 
 func (h *CheckWebsiteHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		id, err := parseWebsiteID(c)
 		if err != nil {
 			return c.String(http.StatusBadRequest, "invalid website id")
@@ -94,6 +102,9 @@ func NewUpdateWebsiteSettingsHandler(service *monitor.Service) *UpdateWebsiteSet
 
 func (h *UpdateWebsiteSettingsHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		id, err := parseWebsiteID(c)
 		if err != nil {
 			return c.String(http.StatusBadRequest, "invalid website id")
@@ -130,6 +141,9 @@ func NewDeleteWebsiteHandler(service *monitor.Service) *DeleteWebsiteHandler {
 
 func (h *DeleteWebsiteHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		id, err := parseWebsiteID(c)
 		if err != nil {
 			return c.String(http.StatusBadRequest, "invalid website id")
@@ -153,6 +167,9 @@ func NewRunChecksHandler(service *monitor.Service) *RunChecksHandler {
 
 func (h *RunChecksHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		h.service.CheckAll()
 		return c.Redirect(http.StatusSeeOther, "/")
 	}
@@ -168,6 +185,9 @@ func NewWebsitesAPIHandler(service *monitor.Service) *WebsitesAPIHandler {
 
 func (h *WebsitesAPIHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		return c.JSON(http.StatusOK, h.service.ListWebsites())
 	}
 }
@@ -182,6 +202,9 @@ func NewSlackConfigGetHandler(service *monitor.Service) *SlackConfigGetHandler {
 
 func (h *SlackConfigGetHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		cfg, err := h.service.GetSlackConfig()
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to load slack config"})
@@ -201,20 +224,21 @@ func NewSlackConfigPostHandler(service *monitor.Service) *SlackConfigPostHandler
 
 func (h *SlackConfigPostHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		enabled := c.FormValue("enabled") == "on" || strings.EqualFold(c.FormValue("enabled"), "true")
 
-		if enabled && strings.TrimSpace(c.FormValue("webhook_url")) == "" {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "webhook_url is required when slack is enabled"})
-		}
-
 		cfg, err := h.service.SaveSlackConfig(monitor.SaveSlackConfigInput{
-			Enabled:    enabled,
-			WebhookURL: c.FormValue("webhook_url"),
-			Channel:    c.FormValue("channel"),
-			Username:   c.FormValue("username"),
+			Enabled:  enabled,
+			Channel:  c.FormValue("channel"),
+			Username: c.FormValue("username"),
 		})
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to save slack config"})
+		}
+		if cfg.Enabled && !cfg.HasWebhook {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "set ZELEMETRY_SLACK_WEBHOOK_URL in environment before enabling slack"})
 		}
 
 		return c.JSON(http.StatusOK, cfg)
@@ -231,6 +255,9 @@ func NewSlackTestHandler(service *monitor.Service) *SlackTestHandler {
 
 func (h *SlackTestHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
 		err := h.service.SendSlackTestMessage()
 		switch {
 		case err == nil:

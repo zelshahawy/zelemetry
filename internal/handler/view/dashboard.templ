@@ -83,6 +83,7 @@ templ Dashboard() {
     .nav {
       display: flex;
       gap: 22px;
+      align-items: center;
     }
     .nav a {
       color: var(--text);
@@ -101,6 +102,7 @@ templ Dashboard() {
       font: inherit;
       cursor: pointer;
     }
+    .nav form { margin: 0; }
 
     .content {
       padding: 28px 0 24px;
@@ -370,6 +372,9 @@ templ Dashboard() {
         <nav class="nav">
           <a href="#">Home</a>
           <button id="slackNavBtn" type="button">Slack Settings</button>
+          <form method="post" action="/logout">
+            <button type="submit">Logout</button>
+          </form>
         </nav>
       </div>
     </header>
@@ -423,9 +428,8 @@ templ Dashboard() {
   <section id="slackModal" class="modal">
     <div class="modal-card">
       <h3>Slack Bot Configuration</h3>
-      <p class="hint">Configure incoming webhook. Website setting <code>Slack alerts</code> sends DOWN notifications.</p>
+      <p class="hint">Webhook is loaded from env <code>ZELEMETRY_SLACK_WEBHOOK_URL</code>. Website setting <code>Slack alerts</code> sends DOWN notifications.</p>
       <form id="slackForm" class="modal-grid">
-        <input class="field" name="webhook_url" type="url" placeholder="https://hooks.slack.com/services/..." required>
         <input class="field" name="channel" type="text" placeholder="#alerts">
         <input class="field" name="username" type="text" placeholder="Zelemetry Bot">
         <label><input type="checkbox" name="enabled"> Enabled</label>
@@ -604,7 +608,6 @@ templ Dashboard() {
       const res = await fetch('/api/slack/config', { headers: { 'Accept': 'application/json' } });
       if (!res.ok) return;
       const cfg = await res.json();
-      el.slackForm.elements.webhook_url.value = cfg.webhook_url || '';
       el.slackForm.elements.channel.value = cfg.channel || '';
       el.slackForm.elements.username.value = cfg.username || '';
       el.slackForm.elements.enabled.checked = !!cfg.enabled;
