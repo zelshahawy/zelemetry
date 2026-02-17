@@ -17,6 +17,7 @@ func Router() fx.Option {
 		fxhttpserver.AsHandler("GET", "/", handler.NewDashboardHandler),
 		fxhttpserver.AsHandler("POST", "/websites", handler.NewAddWebsiteHandler),
 		fxhttpserver.AsHandler("POST", "/websites/:id/check", handler.NewCheckWebsiteHandler),
+		fxhttpserver.AsHandler("POST", "/websites/:id/check-alert", handler.NewCheckWebsiteAndAlertHandler),
 		fxhttpserver.AsHandler("POST", "/websites/:id/settings", handler.NewUpdateWebsiteSettingsHandler),
 		fxhttpserver.AsHandler("POST", "/websites/:id/delete", handler.NewDeleteWebsiteHandler),
 		fxhttpserver.AsHandler("POST", "/checks/run", handler.NewRunChecksHandler),

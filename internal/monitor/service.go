@@ -292,6 +292,33 @@ func (s *Service) CheckWebsite(id int64) (Website, error) {
 	return checked, nil
 }
 
+// CheckWebsiteAndAlertNow runs a check and sends a Slack alert immediately if DOWN.
+func (s *Service) CheckWebsiteAndAlertNow(id int64) (Website, error) {
+	checked, err := s.CheckWebsite(id)
+	if err != nil {
+		return Website{}, err
+	}
+	if !checked.SlackAlertEnabled {
+		return checked, nil
+	}
+
+	if err := s.notifySlackCheckResult(checked); err != nil {
+		return checked, err
+	}
+
+	if checked.LastStatus == "DOWN" {
+		now := time.Now().UTC()
+		checked.SlackLastAlertAt = &now
+		_, _ = s.db.Exec(
+			`UPDATE websites SET slack_last_alert_at = ? WHERE id = ?`,
+			toNullableTimeString(checked.SlackLastAlertAt),
+			checked.ID,
+		)
+	}
+
+	return checked, nil
+}
+
 func (s *Service) GetSlackConfig() (SlackConfig, error) {
 	row := s.db.QueryRow(`SELECT enabled, channel, username FROM slack_config WHERE id = 1`)
 
@@ -650,6 +677,34 @@ func (s *Service) notifySlackDown(site Website) error {
 	}
 
 	text := fmt.Sprintf(":rotating_light: %s is DOWN (%s) status=%d error=%s", site.Name, site.TargetURL, site.LastHTTPStatus, site.LastError)
+	return s.sendSlackMessage(cfg, webhookURL, text)
+}
+
+func (s *Service) notifySlackCheckResult(site Website) error {
+	cfg, err := s.GetSlackConfig()
+	if err != nil {
+		return err
+	}
+	webhookURL := slackWebhookURL()
+	if !cfg.Enabled || webhookURL == "" {
+		return ErrSlackNotConfigured
+	}
+
+	if site.LastStatus == "UP" {
+		text := fmt.Sprintf(":white_check_mark: %s is working correctly (%s).", site.Name, site.TargetURL)
+		return s.sendSlackMessage(cfg, webhookURL, text)
+	}
+
+	reason := strings.TrimSpace(site.LastError)
+	if reason == "" {
+		if site.LastHTTPStatus > 0 {
+			reason = fmt.Sprintf("unexpected status code %d", site.LastHTTPStatus)
+		} else {
+			reason = "unknown error"
+		}
+	}
+
+	text := fmt.Sprintf(":warning: Woah, could not connect to %s with the following error: %s", site.TargetURL, reason)
 	return s.sendSlackMessage(cfg, webhookURL, text)
 }
 

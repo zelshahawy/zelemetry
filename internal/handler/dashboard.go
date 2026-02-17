@@ -92,6 +92,33 @@ func (h *CheckWebsiteHandler) Handle() echo.HandlerFunc {
 	}
 }
 
+type CheckWebsiteAndAlertHandler struct {
+	service *monitor.Service
+}
+
+func NewCheckWebsiteAndAlertHandler(service *monitor.Service) *CheckWebsiteAndAlertHandler {
+	return &CheckWebsiteAndAlertHandler{service: service}
+}
+
+func (h *CheckWebsiteAndAlertHandler) Handle() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
+		id, err := parseWebsiteID(c)
+		if err != nil {
+			return c.String(http.StatusBadRequest, "invalid website id")
+		}
+
+		_, err = h.service.CheckWebsiteAndAlertNow(id)
+		if err != nil {
+			return c.String(http.StatusBadRequest, err.Error())
+		}
+
+		return c.Redirect(http.StatusSeeOther, "/")
+	}
+}
+
 type UpdateWebsiteSettingsHandler struct {
 	service *monitor.Service
 }
