@@ -180,7 +180,7 @@ templ Dashboard() {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
-      align-items: start;
+      align-items: stretch;
     }
 
     .card {
@@ -191,25 +191,34 @@ templ Dashboard() {
       display: grid;
       gap: 10px;
       min-height: 208px;
-      align-self: start;
+      height: 100%;
     }
     .card-head {
       display: flex;
       justify-content: space-between;
       gap: 10px;
       align-items: flex-start;
+      min-height: 92px;
     }
     .name {
       margin: 0;
       font-size: 1.9rem;
-      line-height: 1;
+      line-height: 1.05;
       letter-spacing: -0.02em;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }
     .meta {
       margin-top: 5px;
       color: var(--muted);
       font-size: 0.98rem;
       word-break: break-word;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }
 
     .pill {

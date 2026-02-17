@@ -29,7 +29,7 @@ func (h *SetupGetHandler) Handle() echo.HandlerFunc {
 		if hasUser {
 			return c.Redirect(http.StatusSeeOther, "/login")
 		}
-		return c.HTML(http.StatusOK, authPage("Create Admin User", "/setup", "", "Create Account", ""))
+		return c.HTML(http.StatusOK, authPage("Create Account", "/setup", "", "Create Account", "", "Already have an account?", "/login", "Sign In"))
 	}
 }
 
@@ -44,7 +44,7 @@ func NewSetupPostHandler(service *monitor.Service) *SetupPostHandler {
 func (h *SetupPostHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if err := h.service.CreateInitialUser(c.FormValue("username"), c.FormValue("password")); err != nil {
-			return c.HTML(http.StatusBadRequest, authPage("Create Admin User", "/setup", c.FormValue("username"), "Create Account", err.Error()))
+			return c.HTML(http.StatusBadRequest, authPage("Create Account", "/setup", c.FormValue("username"), "Create Account", err.Error(), "Already have an account?", "/login", "Sign In"))
 		}
 		token, err := h.service.Login(c.FormValue("username"), c.FormValue("password"))
 		if err != nil {
@@ -75,7 +75,7 @@ func (h *LoginGetHandler) Handle() echo.HandlerFunc {
 		if currentSessionToken(c) != "" && h.service.IsSessionValid(currentSessionToken(c)) {
 			return c.Redirect(http.StatusSeeOther, "/")
 		}
-		return c.HTML(http.StatusOK, authPage("Sign In", "/login", "", "Sign In", ""))
+		return c.HTML(http.StatusOK, authPage("Sign In", "/login", "", "Sign In", "", "", "", ""))
 	}
 }
 
@@ -91,7 +91,7 @@ func (h *LoginPostHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		token, err := h.service.Login(c.FormValue("username"), c.FormValue("password"))
 		if err != nil {
-			return c.HTML(http.StatusUnauthorized, authPage("Sign In", "/login", c.FormValue("username"), "Sign In", "invalid username or password"))
+			return c.HTML(http.StatusUnauthorized, authPage("Sign In", "/login", c.FormValue("username"), "Sign In", "invalid username or password", "", "", ""))
 		}
 		writeSessionCookie(c, token)
 		return c.Redirect(http.StatusSeeOther, "/")
@@ -172,12 +172,22 @@ func clearSessionCookie(c echo.Context) {
 	})
 }
 
-func authPage(title, action, username, cta, errMsg string) string {
+func authPage(title, action, username, cta, errMsg, secondaryLabel, secondaryHref, secondaryCTA string) string {
 	safeUser := html.EscapeString(username)
 	safeErr := html.EscapeString(errMsg)
+	safeSecondaryLabel := html.EscapeString(secondaryLabel)
+	safeSecondaryHref := html.EscapeString(secondaryHref)
+	safeSecondaryCTA := html.EscapeString(secondaryCTA)
 	errorBlock := ""
 	if strings.TrimSpace(safeErr) != "" {
 		errorBlock = `<p style="color:#ff8e96;margin:0 0 8px;">` + safeErr + `</p>`
+	}
+	secondaryBlock := ""
+	if strings.TrimSpace(safeSecondaryLabel) != "" && strings.TrimSpace(safeSecondaryHref) != "" && strings.TrimSpace(safeSecondaryCTA) != "" {
+		secondaryBlock = `<div class="row">
+      <span class="muted">` + safeSecondaryLabel + `</span>
+      <a class="link" href="` + safeSecondaryHref + `">` + safeSecondaryCTA + `</a>
+    </div>`
 	}
 	return `<!doctype html>
 <html lang="en">
@@ -187,9 +197,13 @@ func authPage(title, action, username, cta, errMsg string) string {
   <title>Zelemetry - ` + title + `</title>
   <style>
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#020c24;color:#e8eefb;display:grid;place-items:center;min-height:100vh}
-    .card{width:min(420px,92vw);padding:20px;border:1px solid #1a2f56;border-radius:12px;background:#07142e;display:grid;gap:10px}
+    .card{width:min(460px,94vw);padding:24px;border:1px solid #1a2f56;border-radius:12px;background:#07142e;display:grid;gap:12px}
     input{height:42px;padding:0 12px;border-radius:8px;border:1px solid #294269;background:#041028;color:#e8eefb}
     button{height:42px;border-radius:8px;border:1px solid #2f5ab1;background:#123479;color:#fff;font-weight:600;cursor:pointer}
+    .muted{color:#8ea2c9;font-size:.95rem}
+    .row{display:flex;justify-content:space-between;align-items:center;gap:12px}
+    .link{color:#9ec0ff;text-decoration:none;font-weight:600}
+    .link:hover{text-decoration:underline}
     h1{margin:0 0 8px;font-size:1.3rem}
     p{margin:0;color:#8ea2c9}
   </style>
@@ -202,6 +216,7 @@ func authPage(title, action, username, cta, errMsg string) string {
     <input name="username" placeholder="Username" value="` + safeUser + `" required>
     <input name="password" type="password" placeholder="Password" required>
     <button type="submit">` + cta + `</button>
+    ` + secondaryBlock + `
   </form>
 </body>
 </html>`
