@@ -281,7 +281,7 @@ templ Dashboard() {
 
     details {
       border-top: 1px solid #17345f;
-      padding-top: 8px;
+      padding-top: 12px;
     }
     summary {
       color: var(--link);
@@ -290,14 +290,21 @@ templ Dashboard() {
       font-size: 0.9rem;
     }
     .settings {
-      margin-top: 8px;
+      margin-top: 12px;
       display: grid;
-      gap: 8px;
+      gap: 12px;
+    }
+    .settings label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.98rem;
+      line-height: 1.4;
     }
     .settings-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
+      gap: 10px;
     }
     .actions {
       display: flex;
@@ -307,11 +314,14 @@ templ Dashboard() {
     .settings-actions {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
+      gap: 10px;
+      margin-top: 12px;
     }
     .settings-actions form,
     .settings-actions .btn {
       width: 100%;
+      min-height: 52px;
+      padding: 0 14px;
     }
 
     .footer {
