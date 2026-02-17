@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/labstack/echo/v4"
 	"github.com/zelshahawy/zelemetry/internal/handler/view"
 	"github.com/zelshahawy/zelemetry/internal/monitor"
-	"github.com/labstack/echo/v4"
 )
 
 type DashboardHandler struct {
@@ -39,12 +41,14 @@ func (h *AddWebsiteHandler) Handle() echo.HandlerFunc {
 		timeoutMS, _ := strconv.Atoi(c.FormValue("timeout_ms"))
 		interval, _ := strconv.Atoi(c.FormValue("check_interval_seconds"))
 		enabled := c.FormValue("enabled") == "on"
+		slackAlertEnabled := c.FormValue("slack_alert_enabled") == "on"
 
 		_, err := h.service.AddWebsite(monitor.AddWebsiteInput{
 			Name:                 c.FormValue("name"),
 			BaseURL:              c.FormValue("base_url"),
 			Route:                c.FormValue("route"),
 			Enabled:              enabled,
+			SlackAlertEnabled:    slackAlertEnabled,
 			CheckIntervalSeconds: interval,
 			TimeoutMS:            timeoutMS,
 		})
@@ -98,11 +102,13 @@ func (h *UpdateWebsiteSettingsHandler) Handle() echo.HandlerFunc {
 		timeoutMS, _ := strconv.Atoi(c.FormValue("timeout_ms"))
 		interval, _ := strconv.Atoi(c.FormValue("check_interval_seconds"))
 		enabled := c.FormValue("enabled") == "on"
+		slackAlertEnabled := c.FormValue("slack_alert_enabled") == "on"
 
 		_, err = h.service.UpdateWebsiteSettings(id, monitor.UpdateWebsiteSettingsInput{
 			Name:                 c.FormValue("name"),
 			Route:                c.FormValue("route"),
 			Enabled:              enabled,
+			SlackAlertEnabled:    slackAlertEnabled,
 			CheckIntervalSeconds: interval,
 			TimeoutMS:            timeoutMS,
 		})
@@ -122,7 +128,6 @@ func NewDeleteWebsiteHandler(service *monitor.Service) *DeleteWebsiteHandler {
 	return &DeleteWebsiteHandler{service: service}
 }
 
-// Handle handles delete website requests.
 func (h *DeleteWebsiteHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id, err := parseWebsiteID(c)
@@ -138,17 +143,14 @@ func (h *DeleteWebsiteHandler) Handle() echo.HandlerFunc {
 	}
 }
 
-// RunChecksHandler checks every website.
 type RunChecksHandler struct {
 	service *monitor.Service
 }
 
-// NewRunChecksHandler returns a new run checks handler.
 func NewRunChecksHandler(service *monitor.Service) *RunChecksHandler {
 	return &RunChecksHandler{service: service}
 }
 
-// Handle handles full checks execution.
 func (h *RunChecksHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		h.service.CheckAll()
@@ -156,20 +158,88 @@ func (h *RunChecksHandler) Handle() echo.HandlerFunc {
 	}
 }
 
-// WebsitesAPIHandler exposes websites state as JSON.
 type WebsitesAPIHandler struct {
 	service *monitor.Service
 }
 
-// NewWebsitesAPIHandler returns a websites API handler.
 func NewWebsitesAPIHandler(service *monitor.Service) *WebsitesAPIHandler {
 	return &WebsitesAPIHandler{service: service}
 }
 
-// Handle handles API website list requests.
 func (h *WebsitesAPIHandler) Handle() echo.HandlerFunc {
 	return func(c echo.Context) error {
 		return c.JSON(http.StatusOK, h.service.ListWebsites())
+	}
+}
+
+type SlackConfigGetHandler struct {
+	service *monitor.Service
+}
+
+func NewSlackConfigGetHandler(service *monitor.Service) *SlackConfigGetHandler {
+	return &SlackConfigGetHandler{service: service}
+}
+
+func (h *SlackConfigGetHandler) Handle() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		cfg, err := h.service.GetSlackConfig()
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to load slack config"})
+		}
+
+		return c.JSON(http.StatusOK, cfg)
+	}
+}
+
+type SlackConfigPostHandler struct {
+	service *monitor.Service
+}
+
+func NewSlackConfigPostHandler(service *monitor.Service) *SlackConfigPostHandler {
+	return &SlackConfigPostHandler{service: service}
+}
+
+func (h *SlackConfigPostHandler) Handle() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		enabled := c.FormValue("enabled") == "on" || strings.EqualFold(c.FormValue("enabled"), "true")
+
+		if enabled && strings.TrimSpace(c.FormValue("webhook_url")) == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "webhook_url is required when slack is enabled"})
+		}
+
+		cfg, err := h.service.SaveSlackConfig(monitor.SaveSlackConfigInput{
+			Enabled:    enabled,
+			WebhookURL: c.FormValue("webhook_url"),
+			Channel:    c.FormValue("channel"),
+			Username:   c.FormValue("username"),
+		})
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to save slack config"})
+		}
+
+		return c.JSON(http.StatusOK, cfg)
+	}
+}
+
+type SlackTestHandler struct {
+	service *monitor.Service
+}
+
+func NewSlackTestHandler(service *monitor.Service) *SlackTestHandler {
+	return &SlackTestHandler{service: service}
+}
+
+func (h *SlackTestHandler) Handle() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		err := h.service.SendSlackTestMessage()
+		switch {
+		case err == nil:
+			return c.JSON(http.StatusOK, map[string]any{"sent": true})
+		case errors.Is(err, monitor.ErrSlackNotConfigured):
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "slack is not configured"})
+		default:
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send slack test message"})
+		}
 	}
 }
 

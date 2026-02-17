@@ -90,6 +90,17 @@ templ Dashboard() {
       font-weight: 600;
       opacity: 0.92;
     }
+    .nav button {
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 600;
+      opacity: 0.92;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      font: inherit;
+      cursor: pointer;
+    }
 
     .content {
       padding: 28px 0 24px;
@@ -134,6 +145,11 @@ templ Dashboard() {
       cursor: pointer;
       font-weight: 600;
       background: #0b1f44;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
     }
     .btn:hover { border-color: #3b5f96; }
 
@@ -287,6 +303,41 @@ templ Dashboard() {
       background: #010a1f;
     }
 
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(1, 8, 24, 0.72);
+    }
+    .modal.open { display: flex; }
+    .modal-card {
+      width: min(520px, 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #06152f, #041028);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .modal-card h3 {
+      margin: 0;
+      font-size: 1.1rem;
+    }
+    .modal-grid {
+      display: grid;
+      gap: 8px;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
     @media (max-width: 1100px) {
       .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .toolbar { grid-template-columns: 1fr 1fr; }
@@ -309,7 +360,7 @@ templ Dashboard() {
     <header class="header">
       <div class="container header-inner">
         <div class="brand">
-          <div class="brand-mark">ZN</div>
+          <div class="brand-mark">ZM</div>
           <div>
             <h1 class="brand-title">Zelemetry</h1>
             <p class="brand-sub">System Monitoring Dashboard</p>
@@ -317,6 +368,7 @@ templ Dashboard() {
         </div>
         <nav class="nav">
           <a href="#">Home</a>
+          <button id="slackNavBtn" type="button">Slack Settings</button>
         </nav>
       </div>
     </header>
@@ -348,13 +400,13 @@ templ Dashboard() {
               <input class="field" name="name" type="text" placeholder="Name (optional)">
               <input class="field" name="base_url" type="url" placeholder="https://example.com" required>
               <input class="field" name="route" type="text" placeholder="/health">
-              <input class="field" name="check_interval_seconds" type="number" min="5" value="60" required>
-              <input class="field" name="timeout_ms" type="number" min="100" step="100" value="5000" required>
+              <input class="field" name="check_interval_seconds" type="number" min="5" value="200" placeholder="Interval (seconds)" required>
+              <input class="field" name="timeout_ms" type="number" min="100" step="100" value="5000" placeholder="Timeout (ms)" required>
             </div>
             <div class="add-actions">
               <label><input type="checkbox" name="enabled" checked> Enabled</label>
+              <label><input type="checkbox" name="slack_alert_enabled"> Slack alerts</label>
               <button class="btn" type="submit">Add Website</button>
-              <span class="hint">Actions are async: no full page reload.</span>
             </div>
             <div id="addError" class="err"></div>
           </form>
@@ -364,8 +416,27 @@ templ Dashboard() {
       </div>
     </main>
 
-    <footer class="footer">Powered by Zelemetry</footer>
+    <footer class="footer"></footer>
   </div>
+
+  <section id="slackModal" class="modal">
+    <div class="modal-card">
+      <h3>Slack Bot Configuration</h3>
+      <p class="hint">Configure incoming webhook. Website setting <code>Slack alerts</code> sends DOWN notifications.</p>
+      <form id="slackForm" class="modal-grid">
+        <input class="field" name="webhook_url" type="url" placeholder="https://hooks.slack.com/services/..." required>
+        <input class="field" name="channel" type="text" placeholder="#alerts">
+        <input class="field" name="username" type="text" placeholder="Zelemetry Bot">
+        <label><input type="checkbox" name="enabled"> Enabled</label>
+      </form>
+      <div id="slackError" class="err"></div>
+      <div class="modal-actions">
+        <button id="slackTestBtn" class="btn" type="button">Send Test</button>
+        <button id="slackCloseBtn" class="btn" type="button">Close</button>
+        <button id="slackSaveBtn" class="btn" type="button">Save</button>
+      </div>
+    </div>
+  </section>
 
   <script>
     const state = { websites: [] };
@@ -377,7 +448,14 @@ templ Dashboard() {
       sort: document.getElementById('sort'),
       runAll: document.getElementById('runAll'),
       addForm: document.getElementById('addForm'),
-      addError: document.getElementById('addError')
+      addError: document.getElementById('addError'),
+      slackNavBtn: document.getElementById('slackNavBtn'),
+      slackModal: document.getElementById('slackModal'),
+      slackForm: document.getElementById('slackForm'),
+      slackSaveBtn: document.getElementById('slackSaveBtn'),
+      slackCloseBtn: document.getElementById('slackCloseBtn'),
+      slackTestBtn: document.getElementById('slackTestBtn'),
+      slackError: document.getElementById('slackError')
     };
 
     function esc(value) {
@@ -408,6 +486,7 @@ templ Dashboard() {
     function buildCard(w) {
       const cls = statusClass(w.last_status);
       const enabledAttr = w.enabled ? 'checked' : '';
+      const slackAttr = w.slack_alert_enabled ? 'checked' : '';
       const errBlock = w.last_error ? '<div class="err">' + esc(w.last_error) + '</div>' : '';
 
       return ''
@@ -437,10 +516,11 @@ templ Dashboard() {
         + '      <div class="settings-grid">'
         + '        <input class="field" name="name" value="' + esc(w.name) + '">'
         + '        <input class="field" name="route" value="' + esc(w.route || '') + '" placeholder="/health">'
-        + '        <input class="field" name="check_interval_seconds" type="number" min="5" value="' + (w.check_interval_seconds || 60) + '">'
+        + '        <input class="field" name="check_interval_seconds" type="number" min="5" value="' + (w.check_interval_seconds || 200) + '">'
         + '        <input class="field" name="timeout_ms" type="number" min="100" step="100" value="' + (w.timeout_ms || 5000) + '">'
         + '      </div>'
         + '      <label><input type="checkbox" name="enabled" ' + enabledAttr + '> Enabled</label>'
+        + '      <label><input type="checkbox" name="slack_alert_enabled" ' + slackAttr + '> Send DOWN alerts to Slack</label>'
         + '      <div class="actions"><button class="btn" type="submit">Save</button></div>'
         + '    </form>'
         + '    <form class="js-action" action="/websites/' + w.id + '/delete" method="post">'
@@ -510,6 +590,30 @@ templ Dashboard() {
       render(openDetailsIds);
     }
 
+    function closeSlackModal() {
+      el.slackModal.classList.remove('open');
+      el.slackError.textContent = '';
+    }
+
+    function openSlackModal() {
+      el.slackModal.classList.add('open');
+    }
+
+    async function loadSlackConfig() {
+      const res = await fetch('/api/slack/config', { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      el.slackForm.elements.webhook_url.value = cfg.webhook_url || '';
+      el.slackForm.elements.channel.value = cfg.channel || '';
+      el.slackForm.elements.username.value = cfg.username || '';
+      el.slackForm.elements.enabled.checked = !!cfg.enabled;
+    }
+
+    async function saveSlackConfig() {
+      const formData = new FormData(el.slackForm);
+      await postForm('/api/slack/config', formData);
+    }
+
     el.search.addEventListener('input', render);
     el.filter.addEventListener('change', render);
     el.sort.addEventListener('change', render);
@@ -533,6 +637,7 @@ templ Dashboard() {
         await postForm('/websites', new FormData(el.addForm));
         el.addForm.reset();
         el.addForm.querySelector('input[name="enabled"]').checked = true;
+        el.addForm.querySelector('input[name="slack_alert_enabled"]').checked = false;
         await refreshWebsites();
       } catch (e) {
         el.addError.textContent = e.message || 'Failed to add website';
@@ -558,6 +663,40 @@ templ Dashboard() {
         alert(e.message || 'Request failed');
       } finally {
         if (submitBtn) submitBtn.disabled = false;
+      }
+    });
+
+    el.slackNavBtn.addEventListener('click', async () => {
+      await loadSlackConfig();
+      openSlackModal();
+    });
+
+    el.slackCloseBtn.addEventListener('click', () => {
+      closeSlackModal();
+    });
+
+    el.slackModal.addEventListener('click', (event) => {
+      if (event.target === el.slackModal) closeSlackModal();
+    });
+
+    el.slackSaveBtn.addEventListener('click', async () => {
+      el.slackError.textContent = '';
+      try {
+        await saveSlackConfig();
+        closeSlackModal();
+      } catch (e) {
+        el.slackError.textContent = e.message || 'Failed to save slack config';
+      }
+    });
+
+    el.slackTestBtn.addEventListener('click', async () => {
+      el.slackError.textContent = '';
+      try {
+        await saveSlackConfig();
+        await postForm('/api/slack/test', new FormData());
+        closeSlackModal();
+      } catch (e) {
+        el.slackError.textContent = e.message || 'Failed to send slack test';
       }
     });
 

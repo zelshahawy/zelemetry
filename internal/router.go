@@ -1,8 +1,8 @@
 package internal
 
 import (
-	"github.com/zelshahawy/zelemetry/internal/handler"
 	"github.com/ankorstore/yokai/fxhttpserver"
+	"github.com/zelshahawy/zelemetry/internal/handler"
 	"go.uber.org/fx"
 )
 
@@ -16,5 +16,8 @@ func Router() fx.Option {
 		fxhttpserver.AsHandler("POST", "/websites/:id/delete", handler.NewDeleteWebsiteHandler),
 		fxhttpserver.AsHandler("POST", "/checks/run", handler.NewRunChecksHandler),
 		fxhttpserver.AsHandler("GET", "/api/websites", handler.NewWebsitesAPIHandler),
+		fxhttpserver.AsHandler("GET", "/api/slack/config", handler.NewSlackConfigGetHandler),
+		fxhttpserver.AsHandler("POST", "/api/slack/config", handler.NewSlackConfigPostHandler),
+		fxhttpserver.AsHandler("POST", "/api/slack/test", handler.NewSlackTestHandler),
 	)
 }

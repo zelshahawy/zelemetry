@@ -1,89 +1,132 @@
-# Yokai HTTP Template
+# Zelemetry
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Go version](https://img.shields.io/badge/Go-1.24-blue)](https://go.dev/)
-[![Documentation](https://img.shields.io/badge/Doc-online-cyan)](https://ankorstore.github.io/yokai/)
 
-> HTTP application template based on the [Yokai](https://github.com/ankorstore/yokai) Go framework.
+A website health monitoring dashboard built on [Yokai](https://github.com/ankorstore/yokai).
 
-<!-- TOC -->
-* [Documentation](#documentation)
-* [Overview](#overview)
-  * [Layout](#layout)
-  * [Makefile](#makefile)
-* [Getting started](#getting-started)
-  * [Installation](#installation)
-    * [With GitHub](#with-github)
-    * [With gonew](#with-gonew)
-  * [Usage](#usage)
-<!-- TOC -->
+Zelemetry lets you monitor websites/endpoints, run checks manually or on a schedule, and manage settings per website from a live dashboard.
 
-## Documentation
+## Features
 
-For more information about the [Yokai](https://github.com/ankorstore/yokai) framework, you can check its [documentation](https://ankorstore.github.io/yokai).
+- Website monitoring with status (`UP`, `DOWN`, `UNKNOWN`)
+- Per-website settings:
+  - route/path
+  - check interval
+  - timeout
+  - enabled/disabled state
+- Manual checks:
+  - check one website
+  - check all websites
+- Scheduled checks in background worker
+- Persistent storage with SQLite
+- Live dashboard UI (async actions, no full-page reload)
+- JSON API for monitored websites
 
-## Overview
+## Architecture
 
-This template provides:
+- Framework: Yokai + Echo
+- Backend: Go
+- UI rendering: [templ](https://github.com/a-h/templ)
+- Database: SQLite (`modernc.org/sqlite`)
+- Runtime persistence path: `build/zelemetry.db`
 
-- a ready to extend [Yokai](https://github.com/ankorstore/yokai) application, with the [HTTP server](https://ankorstore.github.io/yokai/modules/fxhttpserver/) module installed
-- a ready to use [dev environment](docker-compose.yaml), based on [Air](https://github.com/air-verse/air) (for live reloading)
-- a ready to use [Dockerfile](Dockerfile) for production
-- some examples of [handler](internal/handler/example.go) and [test](internal/handler/example_test.go) to get started
+## Project Layout
 
-### Layout
-
-This template is following the [recommended project layout](https://go.dev/doc/modules/layout#server-project):
-
-- `cmd/`: entry points
-- `configs/`: configuration files
+- `cmd/`: CLI entrypoints
+- `configs/`: app configuration files
 - `internal/`:
-  - `handler/`: HTTP handler and test examples
-  - `bootstrap.go`: bootstrap
-  - `register.go`: dependencies registration
-  - `router.go`: routing registration
+  - `handler/`: HTTP handlers
+  - `handler/view/`: templ UI component(s)
+  - `monitor/`: monitoring service, storage, scheduler
+  - `bootstrap.go`: app bootstrap
+  - `register.go`: dependency registration
+  - `router.go`: route registration
 
-### Makefile
+## HTTP Endpoints
 
-This template provides a [Makefile](Makefile):
+- `GET /` dashboard
+- `GET /api/websites` list monitored websites (JSON)
+- `POST /websites` add website
+- `POST /websites/:id/check` run check for website
+- `POST /websites/:id/settings` update settings
+- `POST /websites/:id/delete` delete website
+- `POST /checks/run` run checks for all websites
 
+## Running Locally
+
+### With Docker (recommended for dev)
+
+```bash
+make up
 ```
-make up     # start the docker compose stack
-make down   # stop the docker compose stack
-make logs   # stream the docker compose stack logs
-make fresh  # refresh the docker compose stack
+
+Open:
+
+- `http://localhost:8080` app dashboard
+- `http://localhost:8081` Yokai core dashboard
+
+Stop:
+
+```bash
+make down
+```
+
+Refresh (rebuild + restart):
+
+```bash
+make fresh
+```
+
+### Without Docker
+
+```bash
+go run . run
+```
+
+## Data Persistence
+
+SQLite is embedded in the app, so no separate DB container is required.
+
+In Docker Compose, data persists via named volume mounted to `/app/build`.
+
+Optional override for DB path:
+
+- env var: `ZELEMETRY_DB_PATH`
+
+Example:
+
+```bash
+ZELEMETRY_DB_PATH=:memory: go test ./...
+```
+
+## Development Commands
+
+```bash
+make up     # start docker compose stack
+make down   # stop docker compose stack
+make logs   # stream stack logs
+make fresh  # rebuild and restart
 make test   # run tests
 make lint   # run linter
 ```
 
-## Getting started
+## Templ Notes
 
-### Installation
+UI is defined in:
 
-#### With GitHub
+- `internal/handler/view/dashboard.templ`
 
-You can create your repository [using the GitHub template](https://github.com/new?template_name=zelemetry&template_owner=ankorstore).
+Generated file:
 
-It will automatically rename your project resources and push them, this operation can take a few minutes.
+- `internal/handler/view/dashboard_templ.go`
 
-Once ready, after cloning and going into your repository, simply run:
+Regenerate after changing `.templ` files:
 
-```shell
-make fresh
+```bash
+go run github.com/a-h/templ/cmd/templ@v0.3.977 generate
 ```
 
-#### With gonew
+## License
 
-You can install [gonew](https://go.dev/blog/gonew), and simply run:
-
-```shell
-gonew github.com/zelshahawy/zelemetry github.com/foo/bar
-cd bar
-make fresh
-```
-
-### Usage
-
-Once ready, the application will be available on:
-- [http://localhost:8080](http://localhost:8080) for the application HTTP server
-- [http://localhost:8081](http://localhost:8081) for the application core dashboard
+MIT

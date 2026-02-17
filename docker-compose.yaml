@@ -1,10 +1,10 @@
 services:
-  http-app-server:
+  zelemetry:
     build:
       dockerfile: dev.Dockerfile
       context: .
     networks:
-      - http-app-network
+      - zelemetry-network
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -18,7 +18,7 @@ services:
       - .env
 
 networks:
-  http-app-network:
+  zelemetry-network:
     driver: bridge
 
 volumes:

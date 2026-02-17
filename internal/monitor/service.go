@@ -1,8 +1,10 @@
 package monitor
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,8 +16,9 @@ import (
 
 const (
 	defaultTimeoutMS  = 5000
-	defaultIntervalS  = 60
+	defaultIntervalS  = 200
 	schedulerTickRate = 5 * time.Second
+	slackAlertDelay   = 5 * time.Minute
 )
 
 type Website struct {
@@ -25,6 +28,7 @@ type Website struct {
 	Route                string     `json:"route"`
 	TargetURL            string     `json:"target_url"`
 	Enabled              bool       `json:"enabled"`
+	SlackAlertEnabled    bool       `json:"slack_alert_enabled"`
 	CheckIntervalSeconds int        `json:"check_interval_seconds"`
 	TimeoutMS            int        `json:"timeout_ms"`
 	LastStatus           string     `json:"last_status"`
@@ -32,6 +36,8 @@ type Website struct {
 	LastResponseMS       int64      `json:"last_response_ms"`
 	LastError            string     `json:"last_error"`
 	LastCheckedAt        *time.Time `json:"last_checked_at"`
+	DownSinceAt          *time.Time `json:"down_since_at,omitempty"`
+	SlackLastAlertAt     *time.Time `json:"slack_last_alert_at,omitempty"`
 }
 
 type AddWebsiteInput struct {
@@ -39,6 +45,7 @@ type AddWebsiteInput struct {
 	BaseURL              string
 	Route                string
 	Enabled              bool
+	SlackAlertEnabled    bool
 	CheckIntervalSeconds int
 	TimeoutMS            int
 }
@@ -47,8 +54,23 @@ type UpdateWebsiteSettingsInput struct {
 	Name                 string
 	Route                string
 	Enabled              bool
+	SlackAlertEnabled    bool
 	CheckIntervalSeconds int
 	TimeoutMS            int
+}
+
+type SlackConfig struct {
+	Enabled    bool   `json:"enabled"`
+	WebhookURL string `json:"webhook_url"`
+	Channel    string `json:"channel"`
+	Username   string `json:"username"`
+}
+
+type SaveSlackConfigInput struct {
+	Enabled    bool
+	WebhookURL string
+	Channel    string
+	Username   string
 }
 
 type Service struct {
@@ -96,12 +118,13 @@ func (s *Service) AddWebsite(input AddWebsiteInput) (Website, error) {
 	enabled := input.Enabled
 
 	res, err := s.db.Exec(
-		`INSERT INTO websites (name, base_url, route, target_url, enabled, check_interval_seconds, timeout_ms, last_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'UNKNOWN')`,
+		`INSERT INTO websites (name, base_url, route, target_url, enabled, slack_alert_enabled, check_interval_seconds, timeout_ms, last_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UNKNOWN')`,
 		name,
 		parsedURL.String(),
 		route,
 		targetURL,
 		boolToInt(enabled),
+		boolToInt(input.SlackAlertEnabled),
 		interval,
 		timeoutMS,
 	)
@@ -148,11 +171,12 @@ func (s *Service) UpdateWebsiteSettings(id int64, input UpdateWebsiteSettingsInp
 	}
 
 	_, err = s.db.Exec(
-		`UPDATE websites SET name = ?, route = ?, target_url = ?, enabled = ?, check_interval_seconds = ?, timeout_ms = ? WHERE id = ?`,
+		`UPDATE websites SET name = ?, route = ?, target_url = ?, enabled = ?, slack_alert_enabled = ?, check_interval_seconds = ?, timeout_ms = ? WHERE id = ?`,
 		name,
 		route,
 		targetURL,
 		boolToInt(input.Enabled),
+		boolToInt(input.SlackAlertEnabled),
 		interval,
 		timeoutMS,
 		id,
@@ -182,7 +206,7 @@ func (s *Service) DeleteWebsite(id int64) error {
 }
 
 func (s *Service) ListWebsites() []Website {
-	rows, err := s.db.Query(`SELECT id, name, base_url, route, target_url, enabled, check_interval_seconds, timeout_ms, last_status, last_http_status, last_response_ms, last_error, last_checked_at FROM websites ORDER BY id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, base_url, route, target_url, enabled, slack_alert_enabled, check_interval_seconds, timeout_ms, last_status, last_http_status, last_response_ms, last_error, last_checked_at, down_since_at, slack_last_alert_at FROM websites ORDER BY id ASC`)
 	if err != nil {
 		return []Website{}
 	}
@@ -200,7 +224,7 @@ func (s *Service) ListWebsites() []Website {
 }
 
 func (s *Service) GetWebsite(id int64) (Website, error) {
-	row := s.db.QueryRow(`SELECT id, name, base_url, route, target_url, enabled, check_interval_seconds, timeout_ms, last_status, last_http_status, last_response_ms, last_error, last_checked_at FROM websites WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, name, base_url, route, target_url, enabled, slack_alert_enabled, check_interval_seconds, timeout_ms, last_status, last_http_status, last_response_ms, last_error, last_checked_at, down_since_at, slack_last_alert_at FROM websites WHERE id = ?`, id)
 	website, err := scanWebsite(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -218,20 +242,91 @@ func (s *Service) CheckWebsite(id int64) (Website, error) {
 	}
 
 	checked := s.performCheck(site)
+	if checked.LastStatus == "DOWN" {
+		if checked.DownSinceAt == nil {
+			if checked.LastCheckedAt != nil {
+				downSince := checked.LastCheckedAt.UTC()
+				checked.DownSinceAt = &downSince
+			} else {
+				now := time.Now().UTC()
+				checked.DownSinceAt = &now
+			}
+		}
+	} else {
+		checked.DownSinceAt = nil
+		checked.SlackLastAlertAt = nil
+	}
+
 	_, err = s.db.Exec(
-		`UPDATE websites SET last_status = ?, last_http_status = ?, last_response_ms = ?, last_error = ?, last_checked_at = ? WHERE id = ?`,
+		`UPDATE websites SET last_status = ?, last_http_status = ?, last_response_ms = ?, last_error = ?, last_checked_at = ?, down_since_at = ?, slack_last_alert_at = ? WHERE id = ?`,
 		checked.LastStatus,
 		checked.LastHTTPStatus,
 		checked.LastResponseMS,
 		checked.LastError,
 		toNullableTimeString(checked.LastCheckedAt),
+		toNullableTimeString(checked.DownSinceAt),
+		toNullableTimeString(checked.SlackLastAlertAt),
 		checked.ID,
 	)
 	if err != nil {
 		return Website{}, fmt.Errorf("update check result: %w", err)
 	}
+	if shouldSendSlackDownAlert(checked) {
+		if notifyErr := s.notifySlackDown(checked); notifyErr == nil {
+			now := time.Now().UTC()
+			checked.SlackLastAlertAt = &now
+			_, _ = s.db.Exec(
+				`UPDATE websites SET slack_last_alert_at = ? WHERE id = ?`,
+				toNullableTimeString(checked.SlackLastAlertAt),
+				checked.ID,
+			)
+		}
+	}
 
 	return checked, nil
+}
+
+func (s *Service) GetSlackConfig() (SlackConfig, error) {
+	row := s.db.QueryRow(`SELECT enabled, webhook_url, channel, username FROM slack_config WHERE id = 1`)
+
+	var (
+		cfg        SlackConfig
+		enabledInt int
+	)
+
+	err := row.Scan(&enabledInt, &cfg.WebhookURL, &cfg.Channel, &cfg.Username)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SlackConfig{}, nil
+		}
+		return SlackConfig{}, fmt.Errorf("get slack config: %w", err)
+	}
+
+	cfg.Enabled = intToBool(enabledInt)
+	return cfg, nil
+}
+
+func (s *Service) SaveSlackConfig(input SaveSlackConfigInput) (SlackConfig, error) {
+	cfg := SlackConfig{
+		Enabled:    input.Enabled,
+		WebhookURL: strings.TrimSpace(input.WebhookURL),
+		Channel:    strings.TrimSpace(input.Channel),
+		Username:   strings.TrimSpace(input.Username),
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO slack_config (id, enabled, webhook_url, channel, username) VALUES (1, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, webhook_url = excluded.webhook_url, channel = excluded.channel, username = excluded.username`,
+		boolToInt(cfg.Enabled),
+		cfg.WebhookURL,
+		cfg.Channel,
+		cfg.Username,
+	)
+	if err != nil {
+		return SlackConfig{}, fmt.Errorf("save slack config: %w", err)
+	}
+
+	return cfg, nil
 }
 
 func (s *Service) CheckAll() []Website {
@@ -309,6 +404,19 @@ func shouldCheckNow(site Website, now time.Time) bool {
 	return now.After(nextCheck) || now.Equal(nextCheck)
 }
 
+func shouldSendSlackDownAlert(site Website) bool {
+	if site.LastStatus != "DOWN" || !site.SlackAlertEnabled {
+		return false
+	}
+	if site.SlackLastAlertAt != nil {
+		return false
+	}
+	if site.DownSinceAt == nil {
+		return false
+	}
+	return time.Since(site.DownSinceAt.UTC()) >= slackAlertDelay
+}
+
 func buildTargetURL(baseURL string, route string) string {
 	trimmedBase := strings.TrimRight(baseURL, "/")
 	trimmedRoute := strings.TrimSpace(route)
@@ -349,11 +457,16 @@ type websiteScanner interface {
 	Scan(dest ...interface{}) error
 }
 
+var ErrSlackNotConfigured = errors.New("slack is not configured")
+
 func scanWebsite(scanner websiteScanner) (Website, error) {
 	var (
 		site        Website
 		enabledInt  int
+		slackInt    int
 		lastChecked sql.NullString
+		downSince   sql.NullString
+		lastAlert   sql.NullString
 	)
 
 	err := scanner.Scan(
@@ -363,6 +476,7 @@ func scanWebsite(scanner websiteScanner) (Website, error) {
 		&site.Route,
 		&site.TargetURL,
 		&enabledInt,
+		&slackInt,
 		&site.CheckIntervalSeconds,
 		&site.TimeoutMS,
 		&site.LastStatus,
@@ -370,18 +484,91 @@ func scanWebsite(scanner websiteScanner) (Website, error) {
 		&site.LastResponseMS,
 		&site.LastError,
 		&lastChecked,
+		&downSince,
+		&lastAlert,
 	)
 	if err != nil {
 		return Website{}, err
 	}
 
 	site.Enabled = intToBool(enabledInt)
+	site.SlackAlertEnabled = intToBool(slackInt)
 	if lastChecked.Valid {
 		parsed, parseErr := time.Parse(time.RFC3339Nano, lastChecked.String)
 		if parseErr == nil {
 			site.LastCheckedAt = &parsed
 		}
 	}
+	if downSince.Valid {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, downSince.String)
+		if parseErr == nil {
+			site.DownSinceAt = &parsed
+		}
+	}
+	if lastAlert.Valid {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, lastAlert.String)
+		if parseErr == nil {
+			site.SlackLastAlertAt = &parsed
+		}
+	}
 
 	return site, nil
+}
+
+func (s *Service) notifySlackDown(site Website) error {
+	cfg, err := s.GetSlackConfig()
+	if err != nil {
+		return err
+	}
+	if !cfg.Enabled || cfg.WebhookURL == "" {
+		return ErrSlackNotConfigured
+	}
+
+	text := fmt.Sprintf(":rotating_light: %s is DOWN (%s) status=%d error=%s", site.Name, site.TargetURL, site.LastHTTPStatus, site.LastError)
+	return s.sendSlackMessage(cfg, text)
+}
+
+// SendSlackTestMessage sends a test slack alert using the configured webhook.
+func (s *Service) SendSlackTestMessage() error {
+	cfg, err := s.GetSlackConfig()
+	if err != nil {
+		return err
+	}
+	if !cfg.Enabled || cfg.WebhookURL == "" {
+		return ErrSlackNotConfigured
+	}
+	return s.sendSlackMessage(cfg, ":warning: Zelemetry test alert")
+}
+
+func (s *Service) sendSlackMessage(cfg SlackConfig, text string) error {
+	payload := map[string]string{"text": text}
+	if cfg.Channel != "" {
+		payload["channel"] = cfg.Channel
+	}
+	if cfg.Username != "" {
+		payload["username"] = cfg.Username
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal slack payload: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, cfg.WebhookURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create slack request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send slack notification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("slack webhook returned status %d", resp.StatusCode)
+	}
+
+	return nil
 }
