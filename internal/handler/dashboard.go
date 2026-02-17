@@ -2,6 +2,8 @@ package handler
 
 import (
 	"errors"
+	"fmt"
+	"html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -116,6 +118,69 @@ func (h *CheckWebsiteAndAlertHandler) Handle() echo.HandlerFunc {
 		}
 
 		return c.Redirect(http.StatusSeeOther, "/")
+	}
+}
+
+type CheckWebsiteLastResponseHandler struct {
+	service *monitor.Service
+}
+
+func NewCheckWebsiteLastResponseHandler(service *monitor.Service) *CheckWebsiteLastResponseHandler {
+	return &CheckWebsiteLastResponseHandler{service: service}
+}
+
+func (h *CheckWebsiteLastResponseHandler) Handle() echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if err := requireAppAuth(c, h.service); err != nil {
+			return err
+		}
+		id, err := parseWebsiteID(c)
+		if err != nil {
+			return c.String(http.StatusBadRequest, "invalid website id")
+		}
+
+		checked, responseBody, err := h.service.CheckWebsiteLastResponse(id)
+		if err != nil {
+			return c.String(http.StatusBadRequest, err.Error())
+		}
+
+		safeName := html.EscapeString(checked.Name)
+		safeURL := html.EscapeString(checked.TargetURL)
+		safeBody := html.EscapeString(responseBody)
+		safeErr := html.EscapeString(checked.LastError)
+
+		htmlPage := fmt.Sprintf(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Last Response - %s</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 0; background: #060f24; color: #e8eefb; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 18px; }
+    .meta { margin-bottom: 12px; color: #9eb0d6; }
+    .status { margin-bottom: 12px; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #041028; border: 1px solid #1a2f56; border-radius: 8px; padding: 12px; min-height: 240px; }
+    .err { color: #ff8e96; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Last Response</h1>
+    <div class="meta"><strong>%s</strong> - %s</div>
+    <div class="status">Status: %s | HTTP: %d | Latency: %dms</div>
+    %s
+    <pre>%s</pre>
+  </div>
+</body>
+</html>`, safeName, safeName, safeURL, checked.LastStatus, checked.LastHTTPStatus, checked.LastResponseMS, func() string {
+			if safeErr == "" {
+				return ""
+			}
+			return `<div class="err">Error: ` + safeErr + `</div>`
+		}(), safeBody)
+
+		return c.HTML(http.StatusOK, htmlPage)
 	}
 }
 

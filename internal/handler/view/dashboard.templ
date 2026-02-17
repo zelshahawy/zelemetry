@@ -304,6 +304,15 @@ templ Dashboard() {
       gap: 8px;
       flex-wrap: wrap;
     }
+    .settings-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .settings-actions form,
+    .settings-actions .btn {
+      width: 100%;
+    }
 
     .footer {
       border-top: 1px solid var(--border);
@@ -360,7 +369,7 @@ templ Dashboard() {
       .cards { grid-template-columns: 1fr; }
       .toolbar { grid-template-columns: 1fr; }
       .add-grid { grid-template-columns: 1fr; }
-      .settings-grid, .stats { grid-template-columns: 1fr; }
+      .settings-grid, .stats, .settings-actions { grid-template-columns: 1fr; }
       .title { font-size: 2.2rem; }
       .brand-title { font-size: 1.35rem; }
       .header-inner { height: auto; padding: 12px 0; }
@@ -526,7 +535,7 @@ templ Dashboard() {
         + '  </div>'
         + '  <details data-id="' + w.id + '">'
         + '    <summary>Settings</summary>'
-        + '    <form class="js-action settings" action="/websites/' + w.id + '/settings" method="post">'
+        + '    <form id="settings-form-' + w.id + '" class="js-action settings" action="/websites/' + w.id + '/settings" method="post">'
         + '      <div class="settings-grid">'
         + '        <input class="field" name="name" value="' + esc(w.name) + '">'
         + '        <input class="field" name="route" value="' + esc(w.route || '') + '" placeholder="/health">'
@@ -535,14 +544,17 @@ templ Dashboard() {
         + '      </div>'
         + '      <label><input type="checkbox" name="enabled" ' + enabledAttr + '> Enabled</label>'
         + '      <label><input type="checkbox" name="slack_alert_enabled" ' + slackAttr + '> Send DOWN alerts to Slack</label>'
-        + '      <div class="actions"><button class="btn" type="submit">Save</button></div>'
         + '    </form>'
-        + '    <form class="js-action" action="/websites/' + w.id + '/check-alert" method="post">'
-        + '      <button class="btn" type="submit">Check + Alert</button>'
-        + '    </form>'
-        + '    <form class="js-action" action="/websites/' + w.id + '/delete" method="post">'
-        + '      <button class="btn" type="submit">Delete</button>'
-        + '    </form>'
+        + '    <div class="settings-actions">'
+        + '      <button class="btn" type="submit" form="settings-form-' + w.id + '">Save</button>'
+        + '      <form class="js-action" action="/websites/' + w.id + '/check-alert" method="post">'
+        + '        <button class="btn" type="submit">Check + Alert</button>'
+        + '      </form>'
+        + '      <a class="btn" href="/websites/' + w.id + '/last-response" target="_blank" rel="noreferrer">Check Last Response</a>'
+        + '      <form class="js-action" action="/websites/' + w.id + '/delete" method="post">'
+        + '        <button class="btn" type="submit">Delete</button>'
+        + '      </form>'
+        + '    </div>'
         + '  </details>'
         + '</article>';
     }

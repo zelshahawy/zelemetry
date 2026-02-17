@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -299,7 +300,7 @@ func (s *Service) CheckWebsiteAndAlertNow(id int64) (Website, error) {
 		return Website{}, err
 	}
 	if !checked.SlackAlertEnabled {
-		return checked, nil
+		return checked, errors.New("slack alerts are disabled for this website")
 	}
 
 	if err := s.notifySlackCheckResult(checked); err != nil {
@@ -317,6 +318,58 @@ func (s *Service) CheckWebsiteAndAlertNow(id int64) (Website, error) {
 	}
 
 	return checked, nil
+}
+
+// CheckWebsiteLastResponse runs a fresh check, persists status, and returns the response body.
+func (s *Service) CheckWebsiteLastResponse(id int64) (Website, string, error) {
+	site, err := s.GetWebsite(id)
+	if err != nil {
+		return Website{}, "", err
+	}
+
+	checked, responseBody := s.performCheckWithBody(site)
+	if checked.LastStatus == "DOWN" {
+		if checked.DownSinceAt == nil {
+			if checked.LastCheckedAt != nil {
+				downSince := checked.LastCheckedAt.UTC()
+				checked.DownSinceAt = &downSince
+			} else {
+				now := time.Now().UTC()
+				checked.DownSinceAt = &now
+			}
+		}
+	} else {
+		checked.DownSinceAt = nil
+		checked.SlackLastAlertAt = nil
+	}
+
+	_, err = s.db.Exec(
+		`UPDATE websites SET last_status = ?, last_http_status = ?, last_response_ms = ?, last_error = ?, last_checked_at = ?, down_since_at = ?, slack_last_alert_at = ? WHERE id = ?`,
+		checked.LastStatus,
+		checked.LastHTTPStatus,
+		checked.LastResponseMS,
+		checked.LastError,
+		toNullableTimeString(checked.LastCheckedAt),
+		toNullableTimeString(checked.DownSinceAt),
+		toNullableTimeString(checked.SlackLastAlertAt),
+		checked.ID,
+	)
+	if err != nil {
+		return Website{}, "", fmt.Errorf("update check result: %w", err)
+	}
+	if shouldSendSlackDownAlert(checked) {
+		if notifyErr := s.notifySlackDown(checked); notifyErr == nil {
+			now := time.Now().UTC()
+			checked.SlackLastAlertAt = &now
+			_, _ = s.db.Exec(
+				`UPDATE websites SET slack_last_alert_at = ? WHERE id = ?`,
+				toNullableTimeString(checked.SlackLastAlertAt),
+				checked.ID,
+			)
+		}
+	}
+
+	return checked, responseBody, nil
 }
 
 func (s *Service) GetSlackConfig() (SlackConfig, error) {
@@ -501,26 +554,39 @@ func (s *Service) CheckDue(now time.Time) {
 }
 
 func (s *Service) performCheck(site Website) Website {
+	checked, _ := s.performCheckWithBody(site)
+	return checked
+}
+
+func (s *Service) performCheckWithBody(site Website) (Website, string) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(site.TimeoutMS)*time.Millisecond)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, site.TargetURL, nil)
 	if err != nil {
-		return checkedDown(site, 0, time.Since(start), err)
+		return checkedDown(site, 0, time.Since(start), err), ""
 	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return checkedDown(site, 0, time.Since(start), err)
+		return checkedDown(site, 0, time.Since(start), err), ""
 	}
 	defer resp.Body.Close()
+
+	bodyBytes, readErr := io.ReadAll(resp.Body)
 
 	now := time.Now().UTC()
 	site.LastCheckedAt = &now
 	site.LastHTTPStatus = resp.StatusCode
 	site.LastResponseMS = time.Since(start).Milliseconds()
 	site.LastError = ""
+
+	if readErr != nil {
+		site.LastStatus = "DOWN"
+		site.LastError = "read response body: " + readErr.Error()
+		return site, ""
+	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		site.LastStatus = "UP"
@@ -529,7 +595,7 @@ func (s *Service) performCheck(site Website) Website {
 		site.LastError = "unexpected status code " + strconv.Itoa(resp.StatusCode)
 	}
 
-	return site
+	return site, string(bodyBytes)
 }
 
 func checkedDown(site Website, code int, duration time.Duration, err error) Website {
